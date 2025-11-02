@@ -11,7 +11,7 @@ tensor of the same shape, making it suitable for tasks like denoising
 or deblurring in the complex domain.
 
 The implementation draws inspiration from the real‐valued Restormer
-implementation 【802216581475939†L4-L29】.  Key building blocks such as
+implementation.  Key building blocks such as
 multi–DConv head transposed self‐attention (MDTA) and gated depthwise
 feed–forward networks (GDFN) have been adapted to operate on complex
 numbers.  Complex normalization is performed by applying
@@ -38,7 +38,7 @@ Classes defined in this file:
   connections.
 * ``ComplexRestormer`` – the full encoder–decoder network with skip
   connections and refinement stage as described in the original
-  Restormer paper 【802216581475939†L88-L149】.
+  Restormer paper.
 
 Usage::
 
@@ -172,7 +172,7 @@ class ComplexDownSample(nn.Module):
     number of channels followed by a pixel unshuffle that reduces the
     spatial dimensions by a factor of 2 and increases channels by a
     factor of 4.  This mirrors the real‐valued downsampling module in
-    the original Restormer 【802216581475939†L69-L76】.
+    the original Restormer.
     """
 
     def __init__(self, channels: int) -> None:
@@ -194,7 +194,7 @@ class ComplexUpSample(nn.Module):
     number of channels followed by a pixel shuffle that increases the
     spatial dimensions by a factor of 2 and reduces channels by a
     factor of 4.  This mirrors the real‐valued upsampling module in
-    the original Restormer 【802216581475939†L79-L86】.
+    the original Restormer.
     """
 
     def __init__(self, channels: int) -> None:
@@ -213,7 +213,7 @@ class ComplexMDTA(nn.Module):
     """Complex multi‐DConv head transposed self‐attention (MDTA).
 
     This is a complex variant of the MDTA block described in the
-    Restormer implementation 【802216581475939†L4-L29】.  Queries, keys and
+    Restormer implementation.  Queries, keys and
     values are generated using complex convolutions; attention weights
     are computed from the real parts of the complex dot products
     between normalized queries and conjugate keys.  The resulting
