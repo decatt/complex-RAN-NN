@@ -4,8 +4,8 @@ complex_mimo_unet.py
 
 This module implements a complex‑valued variant of the MIMO‑UNet
 architecture originally proposed for single image deblurring in
-`Rethinking Coarse‑to‑Fine Approach in Single Image Deblurring` (ICCV 2021)
-【257032074227535†L351-L364】.  The real‐valued MIMO‑UNet builds upon a
+`Rethinking Coarse‑to‑Fine Approach in Single Image Deblurring` (ICCV 2021).  
+The real‐valued MIMO‑UNet builds upon a
 U‑shaped encoder–decoder network but introduces three key ideas: a
 multi‑input single encoder (MISE), a multi‑output single decoder (MOSD)
 and asymmetric feature fusion (AFF) to efficiently propagate information
@@ -55,6 +55,7 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time
 
 from complex_layer import (
     complex_gelu,
@@ -260,7 +261,7 @@ class ComplexMIMOUnet(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 3,
+        in_channels: int = 34,
         base_channels: int = 64,
         num_scales: int = 3,
         *,
@@ -435,11 +436,22 @@ if __name__ == "__main__":
     # Create a dummy complex input tensor (batch=2, channels=3, height=64, width=64)
     x = torch.randn(48, 34, 32, 96, dtype=torch.complex64)
 
+    time1 = time.time()
     # Instantiate the ComplexMIMOUnet model
     model = ComplexMIMOUnet(in_channels=34)
-
+    time2 = time.time()
+    print(f"Model instantiation time: {time2 - time1:.4f}")
+    # calculate number of parameters
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Number of trainable parameters: {num_params}")
+    # memory of the model in MB, complex64
+    memory = num_params * 8 / (1024 ** 2)  # assuming complex64 (8 bytes)
+    print(f"Approximate model memory: {memory:.2f} MB")
+    
     # Forward pass
     y = model(x)
+    time3 = time.time()
+    print(f"Forward pass time: {time3 - time2:.4f}")
 
     # Print output shape
     print(y.shape)  # Expected output: (48, 34, 32, 96)
