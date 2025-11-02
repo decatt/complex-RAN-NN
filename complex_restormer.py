@@ -11,7 +11,7 @@ tensor of the same shape, making it suitable for tasks like denoising
 or deblurring in the complex domain.
 
 The implementation draws inspiration from the real‐valued Restormer
-implementation.  Key building blocks such as
+implementation 【802216581475939†L4-L29】.  Key building blocks such as
 multi–DConv head transposed self‐attention (MDTA) and gated depthwise
 feed–forward networks (GDFN) have been adapted to operate on complex
 numbers.  Complex normalization is performed by applying
@@ -61,7 +61,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple
 
-from complex_layer import complex_gelu, ComplexConv2d, ComplexLayerNorm, ComplexPixelShuffle, ComplexPixelUnshuffle, ComplexDownSample, ComplexUpSample, ComplexMDTA, ComplexGDFN  # type: ignore
+from complex_layer import (
+    complex_gelu,
+    ComplexConv2d,
+    ComplexLayerNorm,
+    ComplexPixelShuffle,
+    ComplexPixelUnshuffle,
+    ComplexDownSample,
+    ComplexUpSample,
+    ComplexMDTA,
+    ComplexGDFN
+)
 
 __all__ = [
     "ComplexRestormerBlock",
@@ -107,7 +117,7 @@ class ComplexRestormer(nn.Module):
 
     This is an encoder–decoder architecture with skip connections and a
     refinement stage.  It follows the design of the real Restormer
-    described in the original implementation 【802216581475939†L88-L149】 but
+    described in the original implementation but
     operates entirely in the complex domain using the modules defined
     above.
 
