@@ -1,65 +1,9 @@
-"""
-complex_layer.py
-=================
-
-This module provides a small collection of PyTorch layers and helpers for
-operating on complex‑valued data. PyTorch has native support for complex
-numbers (e.g. ``torch.complex64`` and ``torch.complex128`` dtypes), but
-many of the built‑in layers only operate on real tensors. The classes
-defined here wrap pairs of real–valued layers to implement the correct
-algebra for complex operations.  Additionally, a simple pointwise
-multiplication routine is provided for complex tensors.
-
-The key components are:
-
-* ``complex_multiplication`` – multiplies two complex numbers or tensors
-  together, supporting both native complex tensors and explicit
-  ``(real, imag)`` tuples.
-* ``ComplexLinear`` – a fully connected layer that applies a complex
-  weight matrix to a complex input.
-* ``ComplexConv2d`` – a two‑dimensional convolution layer for complex
-  inputs.  Internally it maintains separate real and imaginary
-  convolutions and combines their outputs according to the rules of
-  complex multiplication.
-* ``ComplexDepthwiseSeparableConv2d`` – an efficient variant of
-  ``ComplexConv2d`` that factors the convolution into a depthwise
-  convolution followed by a pointwise (1×1) convolution.  This reduces
-  the number of learnable parameters and computations, mirroring
-  depthwise separable convolutions used in real‑valued models such as
-  MobileNet.
-
-The implementations here take inspiration from open source projects
-including the ``complexPyTorch`` repository, but they have been written
-from scratch for clarity.  No external dependencies beyond PyTorch are
-required.
-
-Example usage::
-
-    import torch
-    from complex_layer import ComplexLinear, ComplexConv2d, ComplexDepthwiseSeparableConv2d
-
-    # create a complex input tensor (batch=8, channels=3, height=32, width=32)
-    x = torch.randn(8, 3, 32, 32, dtype=torch.complex64)
-
-    # apply a complex convolution
-    conv = ComplexConv2d(3, 16, kernel_size=3, padding=1)
-    y = conv(x)
-
-    # apply a depthwise separable complex convolution
-    dws = ComplexDepthwiseSeparableConv2d(3, 16, kernel_size=3, padding=1)
-    z = dws(x)
-
-    # apply a linear transformation to a flattened complex vector
-    lin = ComplexLinear(32 * 32 * 16, 10)
-    out = lin(y.view(y.size(0), -1))
-
-"""
-
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Union, Optional
+import torch.nn.functional as F
 
 def complex_multiplication(
     a: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
@@ -470,6 +414,208 @@ class ComplexLinear(nn.Module):
     def extra_repr(self) -> str:
         return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias_real is not None}"
 
+def complex_gelu(x: torch.Tensor) -> torch.Tensor:
+    """Apply GELU activation separately to real and imaginary parts.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Complex tensor to activate.
+
+    Returns
+    -------
+    torch.Tensor
+        Complex tensor with GELU applied to real and imaginary parts.
+    """
+    return F.gelu(x.real) + 1j * F.gelu(x.imag)
+
+
+class ComplexLayerNorm(nn.Module):
+    """Layer normalization for complex inputs.
+
+    This module wraps two real ``nn.LayerNorm`` instances to
+    independently normalize the real and imaginary components of a
+    complex tensor.  It expects inputs of shape ``(..., C)`` where
+    ``C`` is the number of channels.  The normalization is applied
+    across the last dimension as in ``nn.LayerNorm``.
+    """
+
+    def __init__(self, normalized_shape: int, eps: float = 1e-5) -> None:
+        super().__init__()
+        self.norm_real = nn.LayerNorm(normalized_shape, eps=eps)
+        self.norm_imag = nn.LayerNorm(normalized_shape, eps=eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_complex():
+            raise TypeError(
+                f"ComplexLayerNorm expects a complex tensor, got dtype {x.dtype}"
+            )
+        real = self.norm_real(x.real)
+        imag = self.norm_imag(x.imag)
+        return real.to(x.dtype) + 1j * imag.to(x.dtype)
+
+
+class ComplexPixelShuffle(nn.Module):
+    def __init__(self, upscale_factor: int) -> None:
+        super().__init__()
+        self.upscale_factor = upscale_factor
+        self._real_shuffle = nn.PixelShuffle(upscale_factor)
+        self._imag_shuffle = nn.PixelShuffle(upscale_factor)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_complex():
+            raise TypeError(
+                f"ComplexPixelShuffle expects a complex tensor, got dtype {x.dtype}"
+            )
+        real = self._real_shuffle(x.real)
+        imag = self._imag_shuffle(x.imag)
+        return real.to(x.dtype) + 1j * imag.to(x.dtype)
+
+
+class ComplexPixelUnshuffle(nn.Module):
+    def __init__(self, downscale_factor: int) -> None:
+        super().__init__()
+        self.downscale_factor = downscale_factor
+        self._real_unshuffle = nn.PixelUnshuffle(downscale_factor)
+        self._imag_unshuffle = nn.PixelUnshuffle(downscale_factor)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_complex():
+            raise TypeError(
+                f"ComplexPixelUnshuffle expects a complex tensor, got dtype {x.dtype}"
+            )
+        real = self._real_unshuffle(x.real)
+        imag = self._imag_unshuffle(x.imag)
+        return real.to(x.dtype) + 1j * imag.to(x.dtype)
+
+
+class ComplexDownSample(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        # First reduce channels by half using a complex 3×3 convolution
+        self.conv = ComplexConv2d(channels, channels // 2, kernel_size=3, padding=1, bias=False)
+        # Then apply pixel unshuffle to downsample height and width by 2 and
+        # increase channels by a factor of 4
+        self.unshuffle = ComplexPixelUnshuffle(2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.unshuffle(self.conv(x))
+
+
+class ComplexUpSample(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        # First expand channels by a factor of 2 using a complex 3×3 convolution
+        self.conv = ComplexConv2d(channels, channels * 2, kernel_size=3, padding=1, bias=False)
+        # Then apply pixel shuffle to upsample height and width by 2 and
+        # reduce channels by a factor of 4
+        self.shuffle = ComplexPixelShuffle(2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.shuffle(self.conv(x))
+
+
+class ComplexMDTA(nn.Module):
+    """Complex multi‐DConv head transposed self‐attention (MDTA).
+
+    This is a complex variant of the MDTA block described in the
+    Restormer implementation 【802216581475939†L4-L29】.  Queries, keys and
+    values are generated using complex convolutions; attention weights
+    are computed from the real parts of the complex dot products
+    between normalized queries and conjugate keys.  The resulting
+    weights (real) are applied to the values to produce the output.
+    """
+
+    def __init__(self, channels: int, num_heads: int) -> None:
+        super().__init__()
+        if channels % num_heads != 0:
+            raise ValueError("'channels' must be divisible by 'num_heads'.")
+        self.num_heads = num_heads
+        self.temperature = nn.Parameter(torch.ones(1, num_heads, 1, 1))
+        # Generate queries, keys and values
+        self.qkv = ComplexConv2d(channels, channels * 3, kernel_size=1, bias=False)
+        # Depthwise convolution to mix local context
+        self.qkv_conv = ComplexConv2d(channels * 3, channels * 3, kernel_size=3, padding=1, groups=channels * 3, bias=False)
+        # Project the output back to the original channel dimension
+        self.project_out = ComplexConv2d(channels, channels, kernel_size=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_complex():
+            raise TypeError(
+                f"ComplexMDTA expects a complex input tensor, got dtype {x.dtype}"
+            )
+        b, c, h, w = x.shape
+        # Generate q, k, v
+        qkv = self.qkv_conv(self.qkv(x))
+        q, k, v = torch.chunk(qkv, chunks=3, dim=1)
+        # Reshape to (batch, heads, channels_per_head, spatial_positions)
+        c_head = c // self.num_heads
+        # q, k, v have shape (b, c, h*w) when reshaped; but we need (b, heads, c_head, h*w)
+        q = q.view(b, self.num_heads, c_head, h * w)
+        k = k.view(b, self.num_heads, c_head, h * w)
+        v = v.view(b, self.num_heads, c_head, h * w)
+        # Normalize q and k along the last dimension (tokens) as in the original MDTA
+        # Compute the magnitude squared across real and imaginary parts
+        q_mag = (q.real**2 + q.imag**2) + 1e-6
+        k_mag = (k.real**2 + k.imag**2) + 1e-6
+        # Normalize across the token dimension
+        q_norm = torch.linalg.norm(q_mag, dim=-1, keepdim=True)
+        k_norm = torch.linalg.norm(k_mag, dim=-1, keepdim=True)
+        q = q / (q_norm + 1e-6)
+        k = k / (k_norm + 1e-6)
+        # Compute complex dot product of q and conjugate of k along the token dimension
+        # The real part of the dot product is used to build the attention scores
+        # conj(k) = k.real - i k.imag; real part of q * conj(k) is (q.real*k.real + q.imag*k.imag)
+        # We perform matrix multiplication along the token dimension (-1)
+        real_scores = torch.matmul(q.real, k.real.transpose(-2, -1)) + torch.matmul(q.imag, k.imag.transpose(-2, -1))
+        # Apply temperature and softmax to obtain attention weights
+        attn = torch.softmax(real_scores * self.temperature, dim=-1)
+        # Weighted sum of values
+        # v has shape (b, heads, c_head, h*w).  attn: (b, heads, c_head, c_head)
+        out_real = torch.matmul(attn, v.real)
+        out_imag = torch.matmul(attn, v.imag)
+        out = out_real + 1j * out_imag
+        # Reshape back to (b, c, h, w)
+        out = out.view(b, c, h, w)
+        # Final projection
+        out = self.project_out(out)
+        return out
+
+
+class ComplexGDFN(nn.Module):
+    """Complex gated depthwise feed–forward network (GDFN).
+
+    This is a complex variant of the GDFN block described in the
+    Restormer implementation 【802216581475939†L31-L47】.  It uses complex
+    convolutions to project the input to a higher dimensional space,
+    applies a depthwise convolution and gating via a complex GELU, and
+    then projects back to the original channel dimension.
+    """
+
+    def __init__(self, channels: int, expansion_factor: float) -> None:
+        super().__init__()
+        hidden_channels = int(channels * expansion_factor)
+        # Project input to 2 × hidden channels
+        self.project_in = ComplexConv2d(channels, hidden_channels * 2, kernel_size=1, bias=False)
+        # Depthwise convolution on the projected tensor
+        self.conv = ComplexConv2d(hidden_channels * 2, hidden_channels * 2, kernel_size=3, padding=1, groups=hidden_channels * 2, bias=False)
+        # Project back to original channel dimension
+        self.project_out = ComplexConv2d(hidden_channels, channels, kernel_size=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_complex():
+            raise TypeError(
+                f"ComplexGDFN expects a complex input tensor, got dtype {x.dtype}"
+            )
+        # Project and split into two halves
+        x_proj = self.conv(self.project_in(x))
+        x1, x2 = torch.chunk(x_proj, chunks=2, dim=1)
+        # Apply complex GELU to the first half
+        x1 = complex_gelu(x1)
+        # Element‐wise complex multiplication with the second half
+        x_combined = x1 * x2
+        # Project back to the original channel dimension
+        return self.project_out(x_combined)
 
 class ComplexConv2d(nn.Module):
     """A two‑dimensional convolution layer for complex inputs.
